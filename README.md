@@ -37,12 +37,12 @@ mingw32-make -j4
 
 ### Start the server
 ```bash
-./myredis-server
+./myredis_server
 ```
 
 ### Connect with the CLI
 ```bash
-./myredis-cli
+./myredis_cli
 ```
 
 ### Example session
@@ -82,11 +82,11 @@ ctest --output-on-failure
 ## Architecture
 
 ```
-Client (myredis-cli)
+Client (myredis_cli)
    │
    │ TCP + Length-Prefixed Protocol
    ▼
-Server (myredis-server)
+Server (myredis_server)
    ├── Platform Layer  →  cross-platform socket abstraction (POSIX/Winsock2)
    ├── Protocol Layer  →  frame complete messages from TCP byte stream
    ├── Parser          →  tokenize into Command { name, args[] }

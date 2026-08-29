@@ -41,11 +41,11 @@ else()
 endif()
 
 # ─── Executables ────────────────────────────────────────────────
-add_executable(myredis-server src/server/main.cpp)
-target_link_libraries(myredis-server PRIVATE myredis_core)
+add_executable(myredis_server src/server/main.cpp)
+target_link_libraries(myredis_server PRIVATE myredis_core)
 
-add_executable(myredis-cli src/client/main.cpp)
-target_link_libraries(myredis-cli PRIVATE myredis_core)
+add_executable(myredis_cli src/client/main.cpp)
+target_link_libraries(myredis_cli PRIVATE myredis_core)
 
 # ─── Tests ──────────────────────────────────────────────────────
 enable_testing()
@@ -54,10 +54,10 @@ add_executable(test_database tests/test_database.cpp)
 target_link_libraries(test_database PRIVATE myredis_core)
 add_test(NAME DatabaseTest COMMAND test_database)
 
-add_executable(test_parser tests/test_parser.cpp)
-target_link_libraries(test_parser PRIVATE myredis_core)
-add_test(NAME ParserTest COMMAND test_parser)
+add_executable(parser_test tests/test_parser.cpp)
+target_link_libraries(parser_test PRIVATE myredis_core)
+add_test(NAME ParserTest COMMAND parser_test)
 
-add_executable(test_protocol tests/test_protocol.cpp)
-target_link_libraries(test_protocol PRIVATE myredis_core)
-add_test(NAME ProtocolTest COMMAND test_protocol)
+add_executable(protocol_test tests/test_protocol.cpp)
+target_link_libraries(protocol_test PRIVATE myredis_core)
+add_test(NAME ProtocolTest COMMAND protocol_test)
