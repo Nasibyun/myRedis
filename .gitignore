@@ -1,0 +1,34 @@
+# Build artifacts
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Compiled binaries
+*.o
+*.a
+*.so
+*.out
+myredis-server
+myredis-cli
+test_database
+test_parser
+test_protocol
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Persistence files (generated at runtime)
+*.rdb
+*.aof
+dump.myredis
