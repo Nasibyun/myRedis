@@ -1,5 +1,7 @@
 #include "commands/command_handler.h"
 #include <sstream>
+#include <algorithm>
+#include <cctype>
 
 namespace myredis {
 
@@ -15,6 +17,9 @@ std::string CommandHandler::execute(const Command& cmd) {
     if (cmd.name == "KEYS")    return handle_keys(cmd);
     if (cmd.name == "DBSIZE")  return handle_dbsize(cmd);
     if (cmd.name == "FLUSHDB") return handle_flushdb(cmd);
+    if (cmd.name == "EXPIRE")  return handle_expire(cmd);
+    if (cmd.name == "TTL")     return handle_ttl(cmd);
+    if (cmd.name == "PERSIST") return handle_persist(cmd);
 
     return "ERR unknown command '" + cmd.name + "'";
 }
@@ -28,7 +33,32 @@ std::string CommandHandler::handle_set(const Command& cmd) {
     if (cmd.args.size() < 2) {
         return "ERR wrong number of arguments for 'SET' command";
     }
+
     db_.set(cmd.args[0], cmd.args[1]);
+
+    // ── Handle SET key value EX seconds ──────────────────────
+    // Scan remaining arguments for the EX option.
+    // This allows: SET session abc123 EX 60
+    if (cmd.args.size() >= 4) {
+        // Convert option name to uppercase for case-insensitive matching
+        std::string option = cmd.args[2];
+        std::transform(option.begin(), option.end(), option.begin(),
+                       [](unsigned char c) { return std::toupper(c); });
+
+        if (option == "EX") {
+            // Parse the seconds value
+            try {
+                int seconds = std::stoi(cmd.args[3]);
+                if (seconds <= 0) {
+                    return "ERR invalid expire time in 'SET' command";
+                }
+                db_.expire(cmd.args[0], seconds);
+            } catch (const std::exception&) {
+                return "ERR value is not an integer or out of range";
+            }
+        }
+    }
+
     return "OK";
 }
 
@@ -79,6 +109,42 @@ std::string CommandHandler::handle_flushdb(const Command& cmd) {
     (void)cmd;
     db_.flushdb();
     return "OK";
+}
+
+std::string CommandHandler::handle_expire(const Command& cmd) {
+    if (cmd.args.size() != 2) {
+        return "ERR wrong number of arguments for 'EXPIRE' command";
+    }
+
+    int seconds;
+    try {
+        seconds = std::stoi(cmd.args[1]);
+    } catch (const std::exception&) {
+        return "ERR value is not an integer or out of range";
+    }
+
+    if (seconds <= 0) {
+        return "ERR invalid expire time in 'EXPIRE' command";
+    }
+
+    bool result = db_.expire(cmd.args[0], seconds);
+    return "(integer) " + std::string(result ? "1" : "0");
+}
+
+std::string CommandHandler::handle_ttl(const Command& cmd) {
+    if (cmd.args.size() != 1) {
+        return "ERR wrong number of arguments for 'TTL' command";
+    }
+    int remaining = db_.ttl(cmd.args[0]);
+    return "(integer) " + std::to_string(remaining);
+}
+
+std::string CommandHandler::handle_persist(const Command& cmd) {
+    if (cmd.args.size() != 1) {
+        return "ERR wrong number of arguments for 'PERSIST' command";
+    }
+    bool result = db_.persist(cmd.args[0]);
+    return "(integer) " + std::string(result ? "1" : "0");
 }
 
 } // namespace myredis

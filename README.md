@@ -4,13 +4,15 @@ A Redis-inspired in-memory database built from scratch in C++17.
 
 This is a systems programming learning project — the goal is to deeply understand networking, concurrency, persistence, and database internals by building them from the ground up.
 
-## Features (v0.1.0)
+## Features (v0.2.0)
 
 - **In-memory key-value store** using hash tables
+- **TTL / Key expiry** with lazy + active expiry strategies
 - **TCP server** with thread-per-client concurrency
 - **Custom wire protocol** with length-prefixed framing
 - **Interactive CLI** client
-- **Commands**: `SET`, `GET`, `DEL`, `EXISTS`, `KEYS`, `DBSIZE`, `FLUSHDB`, `PING`, `QUIT`
+- **Cross-platform** — Windows (Winsock2) and Linux (POSIX sockets)
+- **Commands**: `SET`, `GET`, `DEL`, `EXISTS`, `KEYS`, `DBSIZE`, `FLUSHDB`, `EXPIRE`, `TTL`, `PERSIST`, `PING`, `QUIT`
 
 ## Build
 
@@ -51,17 +53,21 @@ myredis> SET name Nasib
 OK
 myredis> GET name
 Nasib
-myredis> SET age 21
+myredis> SET session abc123 EX 60
 OK
+myredis> TTL session
+(integer) 59
+myredis> EXPIRE name 120
+(integer) 1
+myredis> TTL name
+(integer) 119
+myredis> PERSIST name
+(integer) 1
 myredis> KEYS
-1) age
+1) session
 2) name
-myredis> DEL age
-(integer) 1
-myredis> EXISTS name
-(integer) 1
 myredis> DBSIZE
-(integer) 1
+(integer) 2
 myredis> QUIT
 OK
 ```

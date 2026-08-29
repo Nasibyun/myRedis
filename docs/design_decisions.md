@@ -88,3 +88,22 @@ This document records important architectural and design decisions made during d
 **Decision**: Use port 6399 instead of Redis's default 6379.
 
 **Reason**: Avoids conflict if real Redis is installed on the same machine.
+
+---
+
+## Decision 6: Dual expiry strategy (lazy + active)
+
+**Date**: Milestone 7
+
+**Context**: Keys can have a TTL. When a key expires, it needs to be deleted. But how and when?
+
+**Options considered**:
+1. Lazy only — check TTL on every read, delete if expired. Simple but "forgotten" keys leak memory forever.
+2. Active only — a background thread scans all keys periodically. Expensive for large datasets.
+3. Lazy + Active — check on read AND periodically scan in the background (same as Redis).
+
+**Decision**: Lazy + Active
+
+**Reason**: Lazy expiry is free (piggybacks on existing reads) and gives O(1) correctness. Active expiry (100ms cycle, 20-key sample) prevents memory leaks from keys that are set-and-forgotten. Together they give the best of both worlds, exactly like Redis does it.
+
+**Tradeoff**: `get()`, `exists()`, `keys()`, `dbsize()` can no longer be `const` methods because lazy expiry mutates state. This is acceptable — correctness over const-correctness.

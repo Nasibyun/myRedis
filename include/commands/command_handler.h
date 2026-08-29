@@ -30,6 +30,9 @@ private:
     std::string handle_keys(const Command& cmd);
     std::string handle_dbsize(const Command& cmd);
     std::string handle_flushdb(const Command& cmd);
+    std::string handle_expire(const Command& cmd);
+    std::string handle_ttl(const Command& cmd);
+    std::string handle_persist(const Command& cmd);
 };
 
 } // namespace myredis

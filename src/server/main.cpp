@@ -71,9 +71,13 @@ int main(int argc, char* argv[]) {
     myredis::Server server("0.0.0.0", port, db);
     g_server = &server;
 
+    // Start the background expiry thread (cleans up expired keys)
+    db.start_expiry_thread();
+
     server.start();  // Blocks until shutdown
 
     // ── Cleanup ──
+    db.stop_expiry_thread();
     myredis::platform::cleanup();
     std::cout << "[myredis] Server stopped." << std::endl;
     return 0;
