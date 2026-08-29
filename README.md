@@ -37,12 +37,12 @@ mingw32-make -j4
 
 ### Start the server
 ```bash
-./myredis_server
+./redis_srv
 ```
 
 ### Connect with the CLI
 ```bash
-./myredis_cli
+./redis_client
 ```
 
 ### Example session

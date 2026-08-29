@@ -41,11 +41,11 @@ else()
 endif()
 
 # ─── Executables ────────────────────────────────────────────────
-add_executable(myredis_server src/server/main.cpp)
-target_link_libraries(myredis_server PRIVATE myredis_core)
+add_executable(redis_srv src/server/main.cpp)
+target_link_libraries(redis_srv PRIVATE myredis_core)
 
-add_executable(myredis_cli src/client/main.cpp)
-target_link_libraries(myredis_cli PRIVATE myredis_core)
+add_executable(redis_client src/client/main.cpp)
+target_link_libraries(redis_client PRIVATE myredis_core)
 
 # ─── Tests ──────────────────────────────────────────────────────
 enable_testing()
