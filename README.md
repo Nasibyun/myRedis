@@ -14,12 +14,21 @@ This is a systems programming learning project — the goal is to deeply underst
 
 ## Build
 
-Requires: Linux/WSL, g++ (C++17), CMake 3.10+
-
+### Linux/macOS
+Requires: g++ or clang++ (C++17), CMake 3.10+
 ```bash
 mkdir build && cd build
 cmake ..
 make -j$(nproc)
+```
+
+### Windows
+Requires: MSYS2 MinGW-w64 (GCC 13+), CMake 3.10+
+```powershell
+$env:PATH = "C:\msys64\mingw64\bin;$env:PATH"
+mkdir build; cd build
+cmake .. -G "MinGW Makefiles"
+mingw32-make -j4
 ```
 
 ## Run
@@ -72,6 +81,7 @@ Client (myredis-cli)
    │ TCP + Length-Prefixed Protocol
    ▼
 Server (myredis-server)
+   ├── Platform Layer  →  cross-platform socket abstraction (POSIX/Winsock2)
    ├── Protocol Layer  →  frame complete messages from TCP byte stream
    ├── Parser          →  tokenize into Command { name, args[] }
    ├── Command Handler →  route to database operations
@@ -93,6 +103,7 @@ myredis/
 │       ├── server.cpp         # TCP server
 │       └── client.cpp         # TCP client
 ├── include/                   # Header files (mirrors src/)
+│   └── platform/platform.h    # Cross-platform socket abstraction
 ├── tests/                     # Unit tests
 ├── CMakeLists.txt
 └── README.md
