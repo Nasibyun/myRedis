@@ -13,8 +13,14 @@
 /// It doesn't scale well beyond ~1000 clients (each thread uses
 /// ~8MB of stack memory), but it's perfect for learning.
 ///
+/// Pub/Sub integration:
+///   The server owns a PubSubManager that is shared across all client
+///   threads. Each client's CommandHandler receives a reference to it.
+///   When a client disconnects, the server cleans up its subscriptions.
+///
 
 #include "database/database.h"
+#include "pubsub/pubsub.h"
 #include "platform/platform.h"
 #include <string>
 #include <thread>
@@ -39,6 +45,7 @@ private:
     int port_;
     socket_t listen_fd_;         // The listening socket file descriptor
     Database& db_;               // Shared database (thread-safe)
+    PubSubManager pubsub_;       // Shared pub/sub manager (thread-safe)
     std::atomic<bool> running_;
     std::vector<std::thread> client_threads_;
 

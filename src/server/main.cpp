@@ -11,6 +11,7 @@
 
 #include "networking/server.h"
 #include "database/database.h"
+#include "persistence/persistence.h"
 #include "platform/platform.h"
 
 #include <iostream>
@@ -43,7 +44,7 @@ int main(int argc, char* argv[]) {
     std::cout << "  ║     In-Memory Database Server        ║" << std::endl;
     std::cout << "  ╚══════════════════════════════════════╝" << std::endl;
     std::cout << std::endl;
-    std::cout << "  Version:  0.1.0" << std::endl;
+    std::cout << "  Version:  0.4.0" << std::endl;
     std::cout << "  PID:      " << platform_getpid() << std::endl;
 
     // Parse optional port argument
@@ -66,6 +67,16 @@ int main(int argc, char* argv[]) {
 
     // Create the shared database
     myredis::Database db;
+
+    // ── Load persisted data (if any) ──────────────────────
+    // If dump.mrdb exists, load it before accepting connections.
+    // This restores the database state from the last SAVE.
+    if (myredis::Persistence::load("dump.mrdb", db)) {
+        std::cout << "  Persistence: loaded dump.mrdb" << std::endl;
+    } else {
+        std::cout << "  Persistence: no dump file found, starting empty" << std::endl;
+    }
+    std::cout << std::endl;
 
     // Create and start the server
     myredis::Server server("0.0.0.0", port, db);

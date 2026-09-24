@@ -147,7 +147,10 @@ void Server::stop() {
 }
 
 void Server::handle_client(socket_t client_fd, const std::string& client_addr) {
-    CommandHandler handler(db_);
+    // ── Create a per-client command handler ───────────────────
+    // The handler gets references to the shared Database and PubSubManager,
+    // plus this client's socket fd (needed for pub/sub subscription tracking).
+    CommandHandler handler(db_, pubsub_, client_fd);
 
     // ── Client request/response loop ──────────────────────────
     // Each iteration:
@@ -172,7 +175,8 @@ void Server::handle_client(socket_t client_fd, const std::string& client_addr) {
         if (!result.ok) {
             response = result.error;
         } else {
-            // Handle QUIT specially — close the connection
+            // Handle QUIT specially — close the connection.
+            // QUIT is allowed even in subscription mode.
             if (result.command.name == "QUIT") {
                 Protocol::send_message(client_fd, "OK");
                 break;
@@ -188,6 +192,11 @@ void Server::handle_client(socket_t client_fd, const std::string& client_addr) {
     }
 
     // ── Cleanup ──────────────────────────────────────────────
+    // Notify the PubSubManager that this client has disconnected.
+    // This removes the client from all channels it was subscribed to,
+    // preventing messages from being sent to a closed socket.
+    pubsub_.client_disconnected(client_fd);
+
     // Close the socket, releasing the file descriptor and telling
     // the OS to send a FIN packet to the client, gracefully closing
     // the TCP connection.

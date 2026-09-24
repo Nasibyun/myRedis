@@ -296,6 +296,208 @@ void test_exists_excludes_expired() {
     std::cout << "  PASS: test_exists_excludes_expired" << std::endl;
 }
 
+// ─── List Command Tests ──────────────────────────────────────
+
+void test_lpush_and_lrange() {
+    myredis::Database db;
+    // LPUSH pushes to the front, so order is reversed
+    int len = db.lpush("mylist", {"a", "b", "c"});
+    assert(len == 3);
+    // After LPUSH a b c: list = [c, b, a]
+    auto elems = db.lrange("mylist", 0, -1);
+    assert(elems.size() == 3);
+    assert(elems[0] == "c");
+    assert(elems[1] == "b");
+    assert(elems[2] == "a");
+    std::cout << "  PASS: test_lpush_and_lrange" << std::endl;
+}
+
+void test_rpush_and_lrange() {
+    myredis::Database db;
+    int len = db.rpush("mylist", {"a", "b", "c"});
+    assert(len == 3);
+    // After RPUSH a b c: list = [a, b, c]
+    auto elems = db.lrange("mylist", 0, -1);
+    assert(elems.size() == 3);
+    assert(elems[0] == "a");
+    assert(elems[1] == "b");
+    assert(elems[2] == "c");
+    std::cout << "  PASS: test_rpush_and_lrange" << std::endl;
+}
+
+void test_lpop() {
+    myredis::Database db;
+    db.rpush("mylist", {"a", "b", "c"});
+
+    auto val = db.lpop("mylist");
+    assert(val.has_value());
+    assert(val.value() == "a");
+
+    // Remaining: [b, c]
+    assert(db.llen("mylist") == 2);
+    std::cout << "  PASS: test_lpop" << std::endl;
+}
+
+void test_rpop() {
+    myredis::Database db;
+    db.rpush("mylist", {"a", "b", "c"});
+
+    auto val = db.rpop("mylist");
+    assert(val.has_value());
+    assert(val.value() == "c");
+
+    // Remaining: [a, b]
+    assert(db.llen("mylist") == 2);
+    std::cout << "  PASS: test_rpop" << std::endl;
+}
+
+void test_lpop_rpop_empty() {
+    myredis::Database db;
+    // Pop from nonexistent key
+    assert(!db.lpop("nolist").has_value());
+    assert(!db.rpop("nolist").has_value());
+
+    // Pop until empty
+    db.rpush("mylist", {"a"});
+    db.lpop("mylist");
+    assert(!db.lpop("mylist").has_value());
+    std::cout << "  PASS: test_lpop_rpop_empty" << std::endl;
+}
+
+void test_lrange_negative_indices() {
+    myredis::Database db;
+    db.rpush("mylist", {"a", "b", "c", "d", "e"});
+
+    // Last 3 elements
+    auto elems = db.lrange("mylist", -3, -1);
+    assert(elems.size() == 3);
+    assert(elems[0] == "c");
+    assert(elems[1] == "d");
+    assert(elems[2] == "e");
+
+    // Out of range
+    auto empty = db.lrange("mylist", 10, 20);
+    assert(empty.empty());
+
+    std::cout << "  PASS: test_lrange_negative_indices" << std::endl;
+}
+
+void test_llen() {
+    myredis::Database db;
+    assert(db.llen("nolist") == 0);
+    db.rpush("mylist", {"a", "b"});
+    assert(db.llen("mylist") == 2);
+    std::cout << "  PASS: test_llen" << std::endl;
+}
+
+void test_lindex() {
+    myredis::Database db;
+    db.rpush("mylist", {"a", "b", "c"});
+
+    assert(db.lindex("mylist", 0).value() == "a");
+    assert(db.lindex("mylist", 2).value() == "c");
+    assert(db.lindex("mylist", -1).value() == "c");
+    assert(db.lindex("mylist", -3).value() == "a");
+    assert(!db.lindex("mylist", 5).has_value());  // Out of range
+    assert(!db.lindex("nolist", 0).has_value());   // Nonexistent
+    std::cout << "  PASS: test_lindex" << std::endl;
+}
+
+void test_list_auto_delete_empty() {
+    myredis::Database db;
+    db.rpush("mylist", {"a"});
+    assert(db.dbsize() == 1);
+
+    db.lpop("mylist");
+    // Empty list should be auto-deleted
+    assert(db.dbsize() == 0);
+    assert(db.llen("mylist") == 0);
+    std::cout << "  PASS: test_list_auto_delete_empty" << std::endl;
+}
+
+void test_list_del() {
+    myredis::Database db;
+    db.rpush("mylist", {"a", "b", "c"});
+    assert(db.del({"mylist"}) == 1);
+    assert(db.llen("mylist") == 0);
+    assert(!db.lpop("mylist").has_value());
+    std::cout << "  PASS: test_list_del" << std::endl;
+}
+
+void test_list_exists_keys_dbsize() {
+    myredis::Database db;
+    db.set("str_key", "hello");
+    db.rpush("list_key", {"a", "b"});
+
+    assert(db.exists({"str_key", "list_key"}) == 2);
+    assert(db.dbsize() == 2);
+
+    auto k = db.keys();
+    assert(k.size() == 2);
+
+    std::cout << "  PASS: test_list_exists_keys_dbsize" << std::endl;
+}
+
+void test_list_expire_and_ttl() {
+    myredis::Database db;
+    db.rpush("mylist", {"a", "b"});
+    assert(db.expire("mylist", 10) == true);
+
+    int remaining = db.ttl("mylist");
+    assert(remaining > 0 && remaining <= 10);
+
+    std::cout << "  PASS: test_list_expire_and_ttl" << std::endl;
+}
+
+void test_list_expired_lazy_delete() {
+    myredis::Database db;
+    db.rpush("mylist", {"a", "b"});
+    db.expire("mylist", 1);
+
+    assert(db.llen("mylist") == 2);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+
+    // List should be expired — llen returns 0, lpop returns nil
+    assert(db.llen("mylist") == 0);
+    assert(!db.lpop("mylist").has_value());
+
+    std::cout << "  PASS: test_list_expired_lazy_delete" << std::endl;
+}
+
+void test_wrongtype_error() {
+    myredis::Database db;
+    // Set a string key
+    db.set("mykey", "hello");
+
+    // LPUSH on a string key should return -1 (WRONGTYPE)
+    assert(db.lpush("mykey", {"a"}) == -1);
+    assert(db.rpush("mykey", {"a"}) == -1);
+    assert(db.llen("mykey") == -1);
+
+    // Set a list key
+    db.rpush("mylist", {"a", "b"});
+
+    // GET on a list key should return nullopt (it only searches store_)
+    assert(!db.get("mylist").has_value());
+
+    std::cout << "  PASS: test_wrongtype_error" << std::endl;
+}
+
+void test_list_flushdb() {
+    myredis::Database db;
+    db.set("str", "val");
+    db.rpush("list", {"a", "b"});
+    assert(db.dbsize() == 2);
+
+    db.flushdb();
+    assert(db.dbsize() == 0);
+    assert(db.llen("list") == 0);
+    assert(!db.get("str").has_value());
+
+    std::cout << "  PASS: test_list_flushdb" << std::endl;
+}
+
 int main() {
     std::cout << "=== Database Tests ===" << std::endl;
 
@@ -328,7 +530,26 @@ int main() {
     test_dbsize_excludes_expired();
     test_exists_excludes_expired();
 
+    // List tests
     std::cout << std::endl;
-    std::cout << "All database tests passed! (" << 23 << " tests)" << std::endl;
+    std::cout << "--- List Tests ---" << std::endl;
+    test_lpush_and_lrange();
+    test_rpush_and_lrange();
+    test_lpop();
+    test_rpop();
+    test_lpop_rpop_empty();
+    test_lrange_negative_indices();
+    test_llen();
+    test_lindex();
+    test_list_auto_delete_empty();
+    test_list_del();
+    test_list_exists_keys_dbsize();
+    test_list_expire_and_ttl();
+    test_list_expired_lazy_delete();
+    test_wrongtype_error();
+    test_list_flushdb();
+
+    std::cout << std::endl;
+    std::cout << "All database tests passed! (" << 38 << " tests)" << std::endl;
     return 0;
 }

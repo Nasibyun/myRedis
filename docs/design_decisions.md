@@ -107,3 +107,41 @@ This document records important architectural and design decisions made during d
 **Reason**: Lazy expiry is free (piggybacks on existing reads) and gives O(1) correctness. Active expiry (100ms cycle, 20-key sample) prevents memory leaks from keys that are set-and-forgotten. Together they give the best of both worlds, exactly like Redis does it.
 
 **Tradeoff**: `get()`, `exists()`, `keys()`, `dbsize()` can no longer be `const` methods because lazy expiry mutates state. This is acceptable — correctness over const-correctness.
+
+---
+
+## Decision 7: Dual-map architecture for data types
+
+**Date**: Milestone 9
+
+**Context**: We need to support list operations (LPUSH, RPUSH, LPOP, etc.) alongside existing string operations (SET, GET). A key can hold either a string or a list — never both. Running a string command on a list key (or vice versa) must return a `WRONGTYPE` error.
+
+**Options considered**:
+1. `std::variant<std::string, std::deque<std::string>>` as the value type in a single map — clean but requires refactoring every existing method signature
+2. Separate `store_` and `list_store_` maps (dual-map) — no changes to existing string method internals
+3. Inheritance / polymorphic value objects — over-engineered for two types
+
+**Decision**: Dual-map architecture
+
+**Reason**: Adding a parallel `list_store_` map alongside the existing `store_` avoids touching any of the battle-tested string methods. Type checking is a simple helper (`key_type_unlocked()`) that checks which map a key lives in. The invariant "a key exists in at most one map" is enforced by the methods themselves (e.g., `set()` erases from `list_store_` before inserting into `store_`).
+
+**Tradeoff**: Methods that operate on "all keys" (`del`, `exists`, `keys`, `dbsize`, `flushdb`, `expire`, `ttl`, `persist`, expiry loop) must now check/operate on both maps. This is a small constant-factor overhead. If we add more data types later (sets, hashes, sorted sets), we may want to refactor to a single map with variant values.
+
+---
+
+## Decision 8: Pub/Sub Manager Architecture & Concurrency
+
+**Date**: Milestone 10
+
+**Context**: Pub/Sub allows clients to subscribe to channels and receive messages published to those channels in real-time. This requires tracking which client sockets are subscribed to which channels and broadcasting messages across client threads.
+
+**Options considered**:
+1. Global pub/sub state inside Database class — couples messaging with key-value data storage
+2. Dedicated `PubSubManager` class owned by `Server` with its own mutex — clean separation of concerns
+3. Third-party event bus / message broker library — adds external dependencies
+
+**Decision**: Dedicated `PubSubManager` class with bidirectional mapping and its own mutex
+
+**Reason**: Keeping `PubSubManager` separate from `Database` maintains the single-responsibility principle. It uses bidirectional mapping (`channel_to_clients_` and `client_to_channels_`) for O(1) channel lookups during `PUBLISH` and instant cleanup during client disconnect. A dedicated `std::mutex` ensures thread safety without contending with database reads and writes.
+
+**Tradeoff**: Pushing messages directly to subscriber sockets from the publishing thread requires robust handling of dead or disconnected sockets, handled via automatic cleanup on socket write failures.

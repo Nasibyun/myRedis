@@ -4,15 +4,22 @@ A Redis-inspired in-memory database built from scratch in C++17.
 
 This is a systems programming learning project — the goal is to deeply understand networking, concurrency, persistence, and database internals by building them from the ground up.
 
-## Features (v0.2.0)
+## Features (v0.4.0)
 
 - **In-memory key-value store** using hash tables
+- **Multiple data types**: strings and lists
 - **TTL / Key expiry** with lazy + active expiry strategies
+- **Publish/Subscribe messaging** with channels and subscription mode
 - **TCP server** with thread-per-client concurrency
 - **Custom wire protocol** with length-prefixed framing
+- **RDB-style persistence** with binary format and CRC32 checksums
 - **Interactive CLI** client
 - **Cross-platform** — Windows (Winsock2) and Linux (POSIX sockets)
-- **Commands**: `SET`, `GET`, `DEL`, `EXISTS`, `KEYS`, `DBSIZE`, `FLUSHDB`, `EXPIRE`, `TTL`, `PERSIST`, `PING`, `QUIT`
+- **String commands**: `SET`, `GET`, `DEL`, `EXISTS`, `KEYS`, `DBSIZE`, `FLUSHDB`, `PING`, `QUIT`
+- **List commands**: `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LRANGE`, `LLEN`, `LINDEX`
+- **TTL commands**: `EXPIRE`, `TTL`, `PERSIST`
+- **Pub/Sub commands**: `SUBSCRIBE`, `UNSUBSCRIBE`, `PUBLISH`
+- **Persistence commands**: `SAVE`
 
 ## Build
 
@@ -57,17 +64,22 @@ myredis> SET session abc123 EX 60
 OK
 myredis> TTL session
 (integer) 59
-myredis> EXPIRE name 120
-(integer) 1
-myredis> TTL name
-(integer) 119
-myredis> PERSIST name
-(integer) 1
+myredis> RPUSH tasks "write code" "run tests" "deploy"
+(integer) 3
+myredis> LRANGE tasks 0 -1
+1) "write code"
+2) "run tests"
+3) "deploy"
+myredis> LPOP tasks
+"write code"
+myredis> LLEN tasks
+(integer) 2
 myredis> KEYS
 1) session
 2) name
-myredis> DBSIZE
-(integer) 2
+3) tasks
+myredis> SAVE
+OK
 myredis> QUIT
 OK
 ```
