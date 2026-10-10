@@ -5,19 +5,22 @@
 /// Accepts connections on port 6399 (or a custom port via command line).
 ///
 /// Usage:
-///   ./myredis-server          # Listen on port 6399
-///   ./myredis-server 7000     # Listen on port 7000
+///   ./myredis-server                    # Listen on port 6399
+///   ./myredis-server 7000               # Listen on port 7000
+///   ./myredis-server --config myredis.conf  # Load config file
 ///
 
 #include "networking/server.h"
 #include "database/database.h"
 #include "persistence/persistence.h"
+#include "config/config.h"
 #include "platform/platform.h"
 
 #include <iostream>
 #include <csignal>
 #include <atomic>
 #include <cstdlib>
+#include <cstring>
 
 // Global server pointer for signal handler access
 static myredis::Server* g_server = nullptr;
@@ -37,6 +40,21 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // ── Load configuration ───────────────────────────────────
+    myredis::Config config;
+
+    // Check for --config flag
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
+            if (config.load_file(argv[i + 1])) {
+                std::cout << "  Config:   loaded " << argv[i + 1] << std::endl;
+            } else {
+                std::cerr << "  Config:   failed to load " << argv[i + 1] << std::endl;
+            }
+            ++i;  // Skip the filename
+        }
+    }
+
     // ── Startup banner ──────────────────────────────────────
     std::cout << std::endl;
     std::cout << "  ╔══════════════════════════════════════╗" << std::endl;
@@ -44,19 +62,30 @@ int main(int argc, char* argv[]) {
     std::cout << "  ║     In-Memory Database Server        ║" << std::endl;
     std::cout << "  ╚══════════════════════════════════════╝" << std::endl;
     std::cout << std::endl;
-    std::cout << "  Version:  0.4.0" << std::endl;
+    std::cout << "  Version:  1.0.0" << std::endl;
     std::cout << "  PID:      " << platform_getpid() << std::endl;
 
-    // Parse optional port argument
-    int port = 6399;  // Default port (6399 to avoid conflict with real Redis on 6379)
-    if (argc > 1) {
-        port = std::atoi(argv[1]);
-        if (port <= 0 || port > 65535) {
-            std::cerr << "  ERROR: Invalid port: " << argv[1] << std::endl;
-            return 1;
+    // Parse optional port argument (overrides config)
+    int port = config.port();
+    std::string bind_addr = config.bind_addr();
+
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--config") == 0) {
+            ++i;  // Skip config filename
+            continue;
+        }
+        // Treat bare number as port
+        int p = std::atoi(argv[i]);
+        if (p > 0 && p <= 65535) {
+            port = p;
         }
     }
+
     std::cout << "  Port:     " << port << std::endl;
+    std::cout << "  Mode:     event loop (single-threaded)" << std::endl;
+    if (!config.password().empty()) {
+        std::cout << "  Auth:     password required" << std::endl;
+    }
     std::cout << std::endl;
 
     // Set up signal handlers for graceful shutdown (Ctrl+C)
@@ -69,8 +98,6 @@ int main(int argc, char* argv[]) {
     myredis::Database db;
 
     // ── Load persisted data (if any) ──────────────────────
-    // If dump.mrdb exists, load it before accepting connections.
-    // This restores the database state from the last SAVE.
     if (myredis::Persistence::load("dump.mrdb", db)) {
         std::cout << "  Persistence: loaded dump.mrdb" << std::endl;
     } else {
@@ -79,8 +106,13 @@ int main(int argc, char* argv[]) {
     std::cout << std::endl;
 
     // Create and start the server
-    myredis::Server server("0.0.0.0", port, db);
+    myredis::Server server(bind_addr, port, db);
     g_server = &server;
+
+    // Configure authentication
+    if (!config.password().empty()) {
+        server.set_password(config.password());
+    }
 
     // Start the background expiry thread (cleans up expired keys)
     db.start_expiry_thread();

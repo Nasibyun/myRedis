@@ -1,5 +1,5 @@
 #include "pubsub/pubsub.h"
-#include "protocol/protocol.h"
+#include "resp/resp.h"
 
 #include <algorithm>
 
@@ -19,11 +19,9 @@ std::vector<std::pair<std::string, int>> PubSubManager::subscribe(
         // Add channel to the client's subscription set
         client_channels_[client_fd].insert(channel);
 
-        // Return (channel_name, total_channels_this_client_is_subscribed_to)
-        // This matches Redis behavior: the third element of the subscribe
-        // response is the total number of channels the client is subscribed to.
-        int client_sub_count = static_cast<int>(client_channels_[client_fd].size());
-        results.emplace_back(channel, client_sub_count);
+        // Return the channel name and the client's total subscription count
+        int sub_count = static_cast<int>(client_channels_[client_fd].size());
+        results.push_back({channel, sub_count});
     }
 
     return results;
@@ -39,13 +37,14 @@ std::vector<std::pair<std::string, int>> PubSubManager::unsubscribe(
     // If no channels specified, unsubscribe from all
     std::vector<std::string> to_unsub;
     if (channels.empty()) {
-        auto it = client_channels_.find(client_fd);
-        if (it != client_channels_.end()) {
-            to_unsub.assign(it->second.begin(), it->second.end());
+        auto cl_it = client_channels_.find(client_fd);
+        if (cl_it != client_channels_.end()) {
+            to_unsub.assign(cl_it->second.begin(), cl_it->second.end());
         }
-        // If client has no subscriptions and no channels given, return count 0
+        // If client has no subscriptions, return a single ("*", 0) result
+        // to match Redis behavior.
         if (to_unsub.empty()) {
-            results.emplace_back("*", 0);
+            results.push_back({"*", 0});
             return results;
         }
     } else {
@@ -53,33 +52,34 @@ std::vector<std::pair<std::string, int>> PubSubManager::unsubscribe(
     }
 
     for (const auto& channel : to_unsub) {
-        // Remove client from the channel's subscriber set
+        // Remove client from the channel
         auto ch_it = channels_.find(channel);
         if (ch_it != channels_.end()) {
             ch_it->second.erase(client_fd);
-            // Clean up empty channels
             if (ch_it->second.empty()) {
                 channels_.erase(ch_it);
             }
         }
 
-        // Remove channel from client's subscription set
+        // Remove channel from the client's set
         auto cl_it = client_channels_.find(client_fd);
         if (cl_it != client_channels_.end()) {
             cl_it->second.erase(channel);
-            // Clean up if client has no more subscriptions
-            if (cl_it->second.empty()) {
-                client_channels_.erase(cl_it);
-            }
         }
 
-        // Return remaining subscription count for this client
-        int remaining = 0;
+        // Return the channel name and the client's remaining subscription count
+        int sub_count = 0;
         auto cl_check = client_channels_.find(client_fd);
         if (cl_check != client_channels_.end()) {
-            remaining = static_cast<int>(cl_check->second.size());
+            sub_count = static_cast<int>(cl_check->second.size());
         }
-        results.emplace_back(channel, remaining);
+        results.push_back({channel, sub_count});
+    }
+
+    // Clean up empty client entry
+    auto cl_it = client_channels_.find(client_fd);
+    if (cl_it != client_channels_.end() && cl_it->second.empty()) {
+        client_channels_.erase(cl_it);
     }
 
     return results;
@@ -93,11 +93,14 @@ int PubSubManager::publish(const std::string& channel, const std::string& messag
         return 0;  // No subscribers on this channel
     }
 
-    // Build the message to push to subscribers.
-    // Format: "message <channel> <message>"
-    // This is our custom format — when we implement RESP (Milestone 12),
-    // this will become a proper RESP array.
-    std::string push_msg = "message " + channel + " " + message;
+    // Build the RESP push message for subscribers.
+    // Format: RESP array ["message", <channel>, <payload>]
+    // This is the standard Redis RESP format for pub/sub messages.
+    std::vector<std::string> parts;
+    parts.push_back(Resp::bulk_string("message"));
+    parts.push_back(Resp::bulk_string(channel));
+    parts.push_back(Resp::bulk_string(message));
+    std::string push_msg = Resp::array(parts);
 
     int delivered = 0;
     // Collect dead sockets to clean up after iteration
@@ -106,7 +109,7 @@ int PubSubManager::publish(const std::string& channel, const std::string& messag
     for (socket_t sub_fd : it->second) {
         // Try to send the message to each subscriber.
         // If send fails, the client has disconnected — mark for cleanup.
-        if (Protocol::send_message(sub_fd, push_msg)) {
+        if (Resp::send_response(sub_fd, push_msg)) {
             ++delivered;
         } else {
             dead_sockets.push_back(sub_fd);

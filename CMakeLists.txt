@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(myredis VERSION 0.4.0 LANGUAGES CXX)
+project(myredis VERSION 1.0.0 LANGUAGES CXX)
 
 # ─── C++ Standard ───────────────────────────────────────────────
 set(CMAKE_CXX_STANDARD 17)
@@ -28,6 +28,8 @@ add_library(myredis_core STATIC
     src/networking/client.cpp
     src/persistence/persistence.cpp
     src/pubsub/pubsub.cpp
+    src/config/config.cpp
+    src/resp/resp.cpp
 )
 
 target_include_directories(myredis_core PUBLIC include)
@@ -71,3 +73,15 @@ add_test(NAME PersistenceTest COMMAND test_persistence)
 add_executable(test_pubsub tests/test_pubsub.cpp)
 target_link_libraries(test_pubsub PRIVATE myredis_core)
 add_test(NAME PubSubTest COMMAND test_pubsub)
+
+add_executable(test_transactions tests/test_transactions.cpp)
+target_link_libraries(test_transactions PRIVATE myredis_core)
+add_test(NAME TransactionTest COMMAND test_transactions)
+
+add_executable(test_config tests/test_config.cpp)
+target_link_libraries(test_config PRIVATE myredis_core)
+add_test(NAME ConfigTest COMMAND test_config)
+
+add_executable(test_resp tests/test_resp.cpp)
+target_link_libraries(test_resp PRIVATE myredis_core)
+add_test(NAME RespTest COMMAND test_resp)

@@ -145,3 +145,61 @@ This document records important architectural and design decisions made during d
 **Reason**: Keeping `PubSubManager` separate from `Database` maintains the single-responsibility principle. It uses bidirectional mapping (`channel_to_clients_` and `client_to_channels_`) for O(1) channel lookups during `PUBLISH` and instant cleanup during client disconnect. A dedicated `std::mutex` ensures thread safety without contending with database reads and writes.
 
 **Tradeoff**: Pushing messages directly to subscriber sockets from the publishing thread requires robust handling of dead or disconnected sockets, handled via automatic cleanup on socket write failures.
+
+---
+
+## Decision 9: RESP2 Wire Protocol
+
+**Date**: Milestone 12
+
+**Context**: Our custom 4-byte length-prefixed protocol works correctly but is incompatible with standard Redis clients (`redis-cli`, Python `redis`, Node `ioredis`). To be useful as a Redis replacement, we need to speak the standard wire protocol.
+
+**Options considered**:
+1. Keep custom protocol — works, but isolates us from the Redis ecosystem
+2. RESP2 (Redis Serialization Protocol v2) — the standard since Redis 1.2, widely supported
+3. RESP3 — newer protocol with richer types, but less universally supported
+
+**Decision**: RESP2
+
+**Reason**: RESP2 is simple, well-documented, and universally supported by every Redis client library. It uses five data types (Simple String, Error, Integer, Bulk String, Array) identified by a single leading byte. Our server accepts both RESP array format (from client libraries) and inline commands (from telnet/our CLI) — same dual-mode as Redis itself.
+
+**Tradeoff**: RESP2 uses `\r\n` delimiters which makes it slightly less efficient than our binary length-prefix for large payloads. The smart response serializer (`Resp::serialize_response()`) must infer RESP types from CommandHandler string responses — this is brittle but avoids refactoring every handler to return structured types.
+
+---
+
+## Decision 10: Single-Threaded Event Loop (select)
+
+**Date**: Milestone 11
+
+**Context**: Our thread-per-client model (Decision 3) works but doesn't scale — each thread uses ~8MB stack memory and requires `shared_mutex` locking on every database operation.
+
+**Options considered**:
+1. Keep thread-per-client — simple, already working
+2. Thread pool — bounded threads, but still needs locking
+3. Single-threaded event loop with `select()` — no threads, no locks
+4. `epoll`/`kqueue` — highest performance, but platform-specific
+
+**Decision**: Single-threaded `select()` event loop
+
+**Reason**: A single-threaded event loop eliminates ALL locking overhead. Since Redis itself is single-threaded, this matches the real architecture. `select()` is available on both POSIX and Winsock2, making it cross-platform. Per-client state is tracked in a `std::unordered_map<socket_t, ClientState>` with read buffers for accumulating partial messages.
+
+**Tradeoff**: `select()` has a hard limit on the number of file descriptors (`FD_SETSIZE` = 64 on Windows, 1024 on Linux). Not suitable for 10k+ connections. Can upgrade to `epoll` (Linux) or `WSAPoll` (Windows) later if needed.
+
+---
+
+## Decision 11: Optimistic Locking with Value Snapshots (WATCH)
+
+**Date**: Milestone 14
+
+**Context**: Redis transactions (`MULTI`/`EXEC`) execute commands atomically, but `WATCH` provides optimistic locking — if a watched key changes between `WATCH` and `EXEC`, the transaction is aborted.
+
+**Options considered**:
+1. Version counters per key — increment on every write, compare at EXEC time
+2. Value snapshots — store the actual value at WATCH time, compare at EXEC time
+3. Dirty flags — mark keys as dirty when any client modifies them
+
+**Decision**: Value snapshots stored in `WatchedKeySnapshot` structs
+
+**Reason**: In a single-threaded event loop, transactions are naturally atomic (no other client can interleave). The main purpose of `WATCH` is detecting changes between `WATCH` and `EXEC` across separate command cycles. Value snapshots (string value + list size) give precise change detection without needing global version counters. The snapshot approach correctly handles both string and list key types.
+
+**Tradeoff**: Snapshot comparison is O(value_size) for strings. For very large values, version counters would be O(1). Acceptable for our use case since most Redis values are small.

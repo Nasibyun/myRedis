@@ -4,22 +4,32 @@ A Redis-inspired in-memory database built from scratch in C++17.
 
 This is a systems programming learning project — the goal is to deeply understand networking, concurrency, persistence, and database internals by building them from the ground up.
 
-## Features (v0.4.0)
+## Features (v1.0.0)
 
 - **In-memory key-value store** using hash tables
 - **Multiple data types**: strings and lists
 - **TTL / Key expiry** with lazy + active expiry strategies
 - **Publish/Subscribe messaging** with channels and subscription mode
-- **TCP server** with thread-per-client concurrency
-- **Custom wire protocol** with length-prefixed framing
+- **Transactions** with `MULTI`, `EXEC`, `DISCARD`, and optimistic locking (`WATCH`)
+- **RESP2 wire protocol** — compatible with `redis-cli` and all standard Redis client libraries
+- **Single-threaded event loop** using `select()` for I/O multiplexing
+- **Configuration file** support (`myredis.conf`) with runtime `CONFIG GET/SET`
+- **Server authentication** via `AUTH` command
+- **Server information** via `INFO` command (uptime, clients, keyspace)
 - **RDB-style persistence** with binary format and CRC32 checksums
-- **Interactive CLI** client
+- **Interactive CLI** client (also supports inline commands via telnet/netcat)
 - **Cross-platform** — Windows (Winsock2) and Linux (POSIX sockets)
-- **String commands**: `SET`, `GET`, `DEL`, `EXISTS`, `KEYS`, `DBSIZE`, `FLUSHDB`, `PING`, `QUIT`
-- **List commands**: `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LRANGE`, `LLEN`, `LINDEX`
-- **TTL commands**: `EXPIRE`, `TTL`, `PERSIST`
-- **Pub/Sub commands**: `SUBSCRIBE`, `UNSUBSCRIBE`, `PUBLISH`
-- **Persistence commands**: `SAVE`
+
+### Commands
+
+| Category | Commands |
+|----------|----------|
+| **Strings** | `SET`, `GET`, `DEL`, `EXISTS`, `KEYS`, `DBSIZE`, `FLUSHDB`, `PING`, `QUIT` |
+| **Lists** | `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LRANGE`, `LLEN`, `LINDEX` |
+| **TTL** | `EXPIRE`, `TTL`, `PERSIST` |
+| **Pub/Sub** | `SUBSCRIBE`, `UNSUBSCRIBE`, `PUBLISH` |
+| **Transactions** | `MULTI`, `EXEC`, `DISCARD`, `WATCH` |
+| **Server** | `AUTH`, `CONFIG GET/SET`, `INFO`, `SAVE` |
 
 ## Build
 
@@ -44,12 +54,25 @@ mingw32-make -j4
 
 ### Start the server
 ```bash
-./test_server
+./test_server                           # Default port 6399
+./test_server 7000                      # Custom port
+./test_server --config myredis.conf     # With config file
 ```
 
-### Connect with the CLI
+### Connect with redis-cli (standard Redis client)
+Since v1.0.0, the server speaks standard RESP2 protocol:
+```bash
+redis-cli -p 6399
+```
+
+### Connect with the built-in CLI
 ```bash
 ./test_client
+```
+
+### Connect with telnet (inline commands)
+```bash
+telnet 127.0.0.1 6399
 ```
 
 ### Example session
@@ -74,14 +97,41 @@ myredis> LPOP tasks
 "write code"
 myredis> LLEN tasks
 (integer) 2
-myredis> KEYS
-1) session
-2) name
-3) tasks
+myredis> MULTI
+OK
+myredis> SET counter 1
+QUEUED
+myredis> SET status active
+QUEUED
+myredis> EXEC
+1) OK
+2) OK
+myredis> INFO
+# Server
+myredis_version:1.0.0
+...
 myredis> SAVE
 OK
 myredis> QUIT
 OK
+```
+
+### Configuration file (myredis.conf)
+```
+# MyRedis configuration
+
+# Network
+port 6399
+bind 0.0.0.0
+
+# Authentication (uncomment to enable)
+# requirepass mysecretpassword
+
+# Persistence
+# save 300
+
+# Logging
+loglevel notice
 ```
 
 ## Run Tests
@@ -94,16 +144,20 @@ ctest --output-on-failure
 ## Architecture
 
 ```
-Client (myredis_cli)
+Client (myredis_cli / redis-cli / telnet)
    │
-   │ TCP + Length-Prefixed Protocol
+   │ TCP + RESP2 Protocol (or inline commands)
    ▼
 Server (myredis_server)
-   ├── Platform Layer  →  cross-platform socket abstraction (POSIX/Winsock2)
-   ├── Protocol Layer  →  frame complete messages from TCP byte stream
-   ├── Parser          →  tokenize into Command { name, args[] }
-   ├── Command Handler →  route to database operations
-   └── Database        →  thread-safe std::unordered_map
+   ├── Event Loop       →  select()-based I/O multiplexing (single-threaded)
+   ├── Platform Layer    →  cross-platform socket abstraction (POSIX/Winsock2)
+   ├── RESP Module       →  RESP2 parser (array + inline) and serializer
+   ├── Parser            →  tokenize inline commands into Command { name, args[] }
+   ├── Command Handler   →  route to database operations + transaction queuing
+   ├── Database          →  std::unordered_map (strings) + std::deque (lists)
+   ├── PubSubManager     →  channel subscriptions + RESP-formatted message broadcasting
+   ├── Persistence       →  RDB-style binary snapshots with CRC32
+   └── Config            →  myredis.conf parser + runtime CONFIG support
 ```
 
 ## Project Structure
@@ -115,16 +169,54 @@ myredis/
 │   ├── client/main.cpp        # CLI entry point
 │   ├── database/database.cpp  # In-memory store
 │   ├── parser/parser.cpp      # Command tokenizer
-│   ├── protocol/protocol.cpp  # Wire protocol
-│   ├── commands/command_handler.cpp
-│   └── networking/
-│       ├── server.cpp         # TCP server
-│       └── client.cpp         # TCP client
+│   ├── protocol/protocol.cpp  # Legacy wire protocol (4-byte length prefix)
+│   ├── resp/resp.cpp          # RESP2 protocol parser & serializer
+│   ├── commands/command_handler.cpp  # Command routing + transactions
+│   ├── networking/
+│   │   ├── server.cpp         # Event loop server (select)
+│   │   └── client.cpp         # TCP client (RESP-aware)
+│   ├── pubsub/pubsub.cpp     # Pub/Sub manager
+│   ├── persistence/persistence.cpp  # RDB persistence
+│   └── config/config.cpp     # Config file parser
 ├── include/                   # Header files (mirrors src/)
-│   └── platform/platform.h    # Cross-platform socket abstraction
+│   └── platform/platform.h   # Cross-platform socket abstraction
 ├── tests/                     # Unit tests
+│   ├── test_database.cpp      # 38 database tests
+│   ├── test_parser.cpp        # Parser tests
+│   ├── test_protocol.cpp      # Legacy protocol tests
+│   ├── test_resp.cpp          # 66 RESP protocol tests
+│   ├── test_persistence.cpp   # 11 persistence tests
+│   ├── test_pubsub.cpp        # 18 pub/sub tests
+│   ├── test_transactions.cpp  # 14 transaction tests
+│   └── test_config.cpp        # 7 config tests
+├── docs/
+│   └── design_decisions.md    # Architecture decision log (11 decisions)
 ├── CMakeLists.txt
 └── README.md
+```
+
+## RESP Protocol
+
+MyRedis v1.0.0 implements the [Redis Serialization Protocol (RESP2)](https://redis.io/docs/reference/protocol-spec/), making it compatible with all standard Redis clients.
+
+### Data Types
+| Type | Prefix | Example |
+|------|--------|---------|
+| Simple String | `+` | `+OK\r\n` |
+| Error | `-` | `-ERR unknown command\r\n` |
+| Integer | `:` | `:1000\r\n` |
+| Bulk String | `$` | `$5\r\nhello\r\n` |
+| Array | `*` | `*2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n` |
+| Null | `$-1` | `$-1\r\n` |
+
+### Client → Server
+Commands can be sent as RESP arrays or inline text:
+```
+# RESP array format (used by redis-cli and client libraries)
+*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n
+
+# Inline format (used by telnet, our CLI)
+SET key value\r\n
 ```
 
 ## License

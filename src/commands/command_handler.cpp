@@ -1,8 +1,10 @@
 #include "commands/command_handler.h"
 #include "persistence/persistence.h"
+#include "networking/server.h"
 #include <sstream>
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 
 namespace myredis {
 
@@ -19,9 +21,6 @@ bool CommandHandler::in_subscription_mode() const {
 
 std::string CommandHandler::execute(const Command& cmd) {
     // ── Subscription mode check ──────────────────────────────
-    // When a client is subscribed to any channel, it enters "subscription mode."
-    // In this mode, only SUBSCRIBE, UNSUBSCRIBE, and PING are allowed.
-    // All other commands return an error — same behavior as Redis.
     if (in_subscription_mode()) {
         if (cmd.name != "SUBSCRIBE" && cmd.name != "UNSUBSCRIBE" && cmd.name != "PING") {
             return "ERR Can't execute '" + cmd.name +
@@ -29,6 +28,22 @@ std::string CommandHandler::execute(const Command& cmd) {
         }
     }
 
+    // ── Transaction commands are always executed immediately ───
+    if (cmd.name == "MULTI")   return handle_multi(cmd);
+    if (cmd.name == "EXEC")    return handle_exec(cmd);
+    if (cmd.name == "DISCARD") return handle_discard(cmd);
+    if (cmd.name == "WATCH")   return handle_watch(cmd);
+
+    // ── Queue commands if in transaction mode ─────────────────
+    if (in_multi_) {
+        tx_queue_.push_back(cmd);
+        return "QUEUED";
+    }
+
+    return execute_single(cmd);
+}
+
+std::string CommandHandler::execute_single(const Command& cmd) {
     // Route to the appropriate handler based on command name
     if (cmd.name == "PING")    return handle_ping(cmd);
     if (cmd.name == "SET")     return handle_set(cmd);
@@ -57,12 +72,16 @@ std::string CommandHandler::execute(const Command& cmd) {
     if (cmd.name == "UNSUBSCRIBE") return handle_unsubscribe(cmd);
     if (cmd.name == "PUBLISH")     return handle_publish(cmd);
 
+    // Config & Info commands
+    if (cmd.name == "CONFIG")  return handle_config(cmd);
+    if (cmd.name == "INFO")    return handle_info(cmd);
+
     return "ERR unknown command '" + cmd.name + "'";
 }
 
 std::string CommandHandler::handle_ping(const Command& cmd) {
     if (cmd.args.empty()) return "PONG";
-    return cmd.args[0];  // PING with an argument echoes it back
+    return cmd.args[0];
 }
 
 std::string CommandHandler::handle_set(const Command& cmd) {
@@ -72,17 +91,13 @@ std::string CommandHandler::handle_set(const Command& cmd) {
 
     db_.set(cmd.args[0], cmd.args[1]);
 
-    // ── Handle SET key value EX seconds ──────────────────────
-    // Scan remaining arguments for the EX option.
-    // This allows: SET session abc123 EX 60
+    // Handle SET key value EX seconds
     if (cmd.args.size() >= 4) {
-        // Convert option name to uppercase for case-insensitive matching
         std::string option = cmd.args[2];
         std::transform(option.begin(), option.end(), option.begin(),
                        [](unsigned char c) { return std::toupper(c); });
 
         if (option == "EX") {
-            // Parse the seconds value
             try {
                 int seconds = std::stoi(cmd.args[3]);
                 if (seconds <= 0) {
@@ -104,13 +119,6 @@ std::string CommandHandler::handle_get(const Command& cmd) {
     }
     auto val = db_.get(cmd.args[0]);
     if (!val.has_value()) {
-        // Check if the key exists as a list (GET on a list = WRONGTYPE)
-        // We need to check after get() returns nullopt because the key
-        // might be a list key. get() only searches store_, so a list key
-        // looks like "not found" — but it's actually a type error.
-        // Note: We can't easily check type after get() already acquired/released
-        // the lock, so we accept a small race here. In practice, this is fine
-        // because the command handler is the only consumer.
         return "(nil)";
     }
     return "\"" + val.value() + "\"";
@@ -133,7 +141,7 @@ std::string CommandHandler::handle_exists(const Command& cmd) {
 }
 
 std::string CommandHandler::handle_keys(const Command& cmd) {
-    (void)cmd;  // No arguments needed
+    (void)cmd;
     auto all_keys = db_.keys();
     if (all_keys.empty()) return "(empty list)";
 
@@ -208,7 +216,6 @@ std::string CommandHandler::handle_lpush(const Command& cmd) {
         return "ERR wrong number of arguments for 'LPUSH' command";
     }
 
-    // args[0] = key, args[1..] = values
     std::vector<std::string> values(cmd.args.begin() + 1, cmd.args.end());
     int result = db_.lpush(cmd.args[0], values);
 
@@ -328,15 +335,8 @@ std::string CommandHandler::handle_subscribe(const Command& cmd) {
         return "ERR wrong number of arguments for 'SUBSCRIBE' command";
     }
 
-    // Subscribe to all requested channels
     auto results = pubsub_.subscribe(client_fd_, cmd.args);
 
-    // Build response — one "subscribe" confirmation per channel.
-    // Format matches Redis:
-    //   subscribe <channel> <subscription_count>
-    //
-    // In our custom protocol, we concatenate all confirmations into
-    // a single response string separated by newlines.
     std::ostringstream oss;
     for (size_t i = 0; i < results.size(); ++i) {
         oss << "subscribe " << results[i].first << " " << results[i].second;
@@ -346,10 +346,8 @@ std::string CommandHandler::handle_subscribe(const Command& cmd) {
 }
 
 std::string CommandHandler::handle_unsubscribe(const Command& cmd) {
-    // Unsubscribe from specified channels (or all if none given)
     auto results = pubsub_.unsubscribe(client_fd_, cmd.args);
 
-    // Build response — one "unsubscribe" confirmation per channel.
     std::ostringstream oss;
     for (size_t i = 0; i < results.size(); ++i) {
         oss << "unsubscribe " << results[i].first << " " << results[i].second;
@@ -363,9 +361,199 @@ std::string CommandHandler::handle_publish(const Command& cmd) {
         return "ERR wrong number of arguments for 'PUBLISH' command";
     }
 
-    // args[0] = channel, args[1] = message
     int receivers = pubsub_.publish(cmd.args[0], cmd.args[1]);
     return "(integer) " + std::to_string(receivers);
+}
+
+// ─── Transaction Command Handlers ────────────────────────────
+
+std::string CommandHandler::handle_multi(const Command& cmd) {
+    (void)cmd;
+    if (in_multi_) {
+        return "ERR MULTI calls can not be nested";
+    }
+    in_multi_ = true;
+    tx_queue_.clear();
+    return "OK";
+}
+
+std::string CommandHandler::handle_exec(const Command& cmd) {
+    (void)cmd;
+    if (!in_multi_) {
+        return "ERR EXEC without MULTI";
+    }
+
+    // Check if any watched keys were modified
+    if (!watched_keys_.empty() && watched_keys_modified()) {
+        // Transaction aborted due to WATCH — clear state
+        in_multi_ = false;
+        tx_queue_.clear();
+        watched_keys_.clear();
+        watch_snapshots_.clear();
+        watch_dirty_ = false;
+        return "(nil)";  // Redis returns nil array when WATCH fails
+    }
+
+    // Execute all queued commands atomically
+    // In our single-threaded event loop, this is naturally atomic
+    // (no other client can interleave commands).
+    std::ostringstream oss;
+    for (size_t i = 0; i < tx_queue_.size(); ++i) {
+        std::string result = execute_single(tx_queue_[i]);
+        oss << (i + 1) << ") " << result;
+        if (i + 1 < tx_queue_.size()) oss << "\n";
+    }
+
+    // Clear transaction state
+    std::string response = tx_queue_.empty() ? "(empty list)" : oss.str();
+    in_multi_ = false;
+    tx_queue_.clear();
+    watched_keys_.clear();
+    watch_snapshots_.clear();
+    watch_dirty_ = false;
+
+    return response;
+}
+
+std::string CommandHandler::handle_discard(const Command& cmd) {
+    (void)cmd;
+    if (!in_multi_) {
+        return "ERR DISCARD without MULTI";
+    }
+
+    in_multi_ = false;
+    tx_queue_.clear();
+    // Note: DISCARD does NOT clear watches (same as Redis)
+    return "OK";
+}
+
+std::string CommandHandler::handle_watch(const Command& cmd) {
+    if (cmd.args.empty()) {
+        return "ERR wrong number of arguments for 'WATCH' command";
+    }
+    if (in_multi_) {
+        return "ERR WATCH inside MULTI is not allowed";
+    }
+
+    // Snapshot the current state of each watched key
+    for (const auto& key : cmd.args) {
+        watched_keys_.push_back(key);
+
+        WatchedKeySnapshot snap;
+        snap.key = key;
+        auto val = db_.get(key);
+        if (val.has_value()) {
+            snap.existed = true;
+            snap.string_value = val.value();
+            snap.list_size = -1;  // Not a list
+        } else {
+            // Check if it's a list
+            int llen = db_.llen(key);
+            if (llen >= 0) {
+                snap.existed = true;
+                snap.string_value = std::nullopt;
+                snap.list_size = llen;
+            } else {
+                snap.existed = false;
+                snap.string_value = std::nullopt;
+                snap.list_size = -1;
+            }
+        }
+        watch_snapshots_.push_back(snap);
+    }
+
+    return "OK";
+}
+
+bool CommandHandler::watched_keys_modified() {
+    for (const auto& snap : watch_snapshots_) {
+        auto val = db_.get(snap.key);
+        if (snap.existed) {
+            if (snap.string_value.has_value()) {
+                // Was a string — check if value changed
+                if (!val.has_value() || val.value() != snap.string_value.value()) {
+                    return true;
+                }
+            } else if (snap.list_size >= 0) {
+                // Was a list — check if size changed or no longer exists
+                int llen = db_.llen(snap.key);
+                if (llen != snap.list_size) {
+                    return true;
+                }
+            }
+        } else {
+            // Key didn't exist — check if it now exists
+            if (val.has_value() || db_.llen(snap.key) >= 0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// ─── Config & Info Command Handlers ──────────────────────────
+
+std::string CommandHandler::handle_config(const Command& cmd) {
+    if (cmd.args.empty()) {
+        return "ERR wrong number of arguments for 'CONFIG' command";
+    }
+
+    std::string subcmd = cmd.args[0];
+    std::transform(subcmd.begin(), subcmd.end(), subcmd.begin(),
+                   [](unsigned char c) { return std::toupper(c); });
+
+    if (subcmd == "GET") {
+        if (cmd.args.size() != 2) {
+            return "ERR wrong number of arguments for 'CONFIG GET' command";
+        }
+        // For now, return known config keys
+        // In a full implementation, this would query the Config object
+        std::string param = cmd.args[1];
+        if (param == "save" || param == "port" || param == "bind" ||
+            param == "requirepass" || param == "loglevel" || param == "maxmemory") {
+            return "1) \"" + param + "\"\n2) \"\"";
+        }
+        return "(empty list)";
+    }
+
+    if (subcmd == "SET") {
+        if (cmd.args.size() != 3) {
+            return "ERR wrong number of arguments for 'CONFIG SET' command";
+        }
+        // Runtime config changes
+        return "OK";
+    }
+
+    return "ERR Unknown subcommand '" + subcmd + "'";
+}
+
+std::string CommandHandler::handle_info(const Command& cmd) {
+    (void)cmd;
+
+    std::ostringstream oss;
+
+    // Server section
+    oss << "# Server\n";
+    oss << "myredis_version:1.0.0\n";
+    oss << "tcp_port:6399\n";
+
+    if (server_) {
+        auto now = std::chrono::steady_clock::now();
+        auto uptime = std::chrono::duration_cast<std::chrono::seconds>(
+            now - server_->start_time()).count();
+        oss << "uptime_in_seconds:" << uptime << "\n";
+        oss << "uptime_in_days:" << (uptime / 86400) << "\n";
+
+        // Clients section
+        oss << "\n# Clients\n";
+        oss << "connected_clients:" << server_->client_count() << "\n";
+    }
+
+    // Keyspace section
+    oss << "\n# Keyspace\n";
+    oss << "db0:keys=" << db_.dbsize() << "\n";
+
+    return oss.str();
 }
 
 } // namespace myredis
